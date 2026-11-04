@@ -2,7 +2,7 @@
 
 Runbook de despliegue del sitio `https://www.espacioauditorium.com.ar`
 (Vite + React en Vercel, funciones serverless en `api/`, Supabase, Google Calendar,
-Mercado Pago, Twilio + Claude para el bot de WhatsApp).
+Mercado Pago, Meta Cloud API + Grok para el bot de WhatsApp).
 
 > **Regla número uno: producción se despliega SOLO con `git push` a `main`.**
 > Nunca `vercel --prod`, nunca `vercel deploy --prebuilt`, nunca desde un árbol
@@ -37,7 +37,7 @@ repo y rotar los secretos que contienen** (ver `SECURITY.md` §3). Ya están en
 - Node **24.x** (hay `.nvmrc`; `nvm use`). `package.json` declara `engines.node = 24.x`, que es
   lo que usa Vercel.
 - Acceso al proyecto de Vercel, al proyecto de Supabase (`wxjytqjwoarmqvceyvqj`),
-  a Mercado Pago Developers, a la consola de Twilio, a Google Cloud (service account) y a la
+  a Mercado Pago Developers, a Meta (app "Espacio Auditorium Bot" y WhatsApp Manager), a Google Cloud (service account) y a la
   cuenta de Gmail del negocio.
 
 ---
@@ -89,10 +89,12 @@ bundle del navegador: **nunca un secreto en una `VITE_*`**.
 | `EMAIL_APP_PASSWORD` | Prod, Preview | sí | App Password de Google |
 | `HUMAN_WHATSAPP_NUMBER` | Prod, Preview | no | WhatsApp humano (default 5491138255877) |
 | `CALLMEBOT_PHONE`, `CALLMEBOT_APIKEY` | Prod | no | callmebot.com |
-| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Prod | sí (bot) | Twilio Console |
-| `TWILIO_WHATSAPP_FROM`, `TEAM_WHATSAPP_TO` | Prod | sí (bot) | `whatsapp:+…` |
-| `TWILIO_WEBHOOK_URL` | Prod | no | URL exacta del webhook en Twilio (default www) |
-| `ANTHROPIC_API_KEY` | Prod | sí (bot) | console.anthropic.com |
+| `WA_ACCESS_TOKEN` | Prod | sí (bot) | token permanente del usuario del sistema (Business Settings) |
+| `META_APP_SECRET` | Prod | sí (bot) | app de Meta > Configuración > Básica |
+| `WA_PHONE_NUMBER_ID`, `WA_VERIFY_TOKEN` | Prod | sí (bot) | WhatsApp Manager / texto propio |
+| `XAI_API_KEY`, `XAI_MODEL` | Prod | sí (bot) | console.x.ai |
+| `ANTHROPIC_API_KEY` | Prod | no | respaldo de Grok (console.anthropic.com) |
+| `TEAM_WHATSAPP_TO` | Prod | no | `whatsapp:+…` del equipo para avisos |
 | `ADMIN_PASSWORD` | Prod, Preview | sí | `openssl rand -base64 24` |
 | `ADMIN_SESSION_SECRET` | Prod, Preview | recomendada | `openssl rand -hex 32` |
 | `CRON_SECRET` | Prod | sí | `openssl rand -hex 32` (Vercel lo manda como Bearer a los crons) |
@@ -153,13 +155,14 @@ crearse un usuario `authenticated`.
 
 ---
 
-## 7. Twilio (bot de WhatsApp)
+## 7. Bot de WhatsApp (Meta Cloud API + Grok)
 
-Twilio Console > Messaging > (sender de WhatsApp o Sandbox) > *When a message comes in*:
-`https://www.espacioauditorium.com.ar/api/whatsapp-twilio`, método **POST**. Esa URL tiene
-que ser **idéntica** a `TWILIO_WEBHOOK_URL` (la firma se calcula sobre ella). Probar con un
-mensaje real después de cada deploy: si el bot no contesta y en los logs aparece
-`403 firma inválida`, la URL o el `TWILIO_AUTH_TOKEN` no coinciden.
+App de Meta **Espacio Auditorium Bot** > WhatsApp > Configuración > Webhook:
+`https://www.espacioauditorium.com.ar/api/whatsapp-meta`, token de verificación =
+`WA_VERIFY_TOKEN`, campo suscripto `messages`. La firma `X-Hub-Signature-256` se valida con
+`META_APP_SECRET` (falla cerrado). Probar con un mensaje real al número del bot después de
+cada deploy: si no contesta, revisar Vercel > Logs `[wa-meta]` (`401` = `META_APP_SECRET`
+no coincide).
 
 ---
 
@@ -192,7 +195,7 @@ curl -s "$SITE/api/availability?from=$(date +%F)&to=$(date -v+30d +%F 2>/dev/nul
 
 # Endpoints protegidos: tienen que rechazar
 curl -s -o /dev/null -w '%{http_code}\n' $SITE/api/keep-alive                       # 401
-curl -s -o /dev/null -w '%{http_code}\n' -X POST $SITE/api/whatsapp-twilio          # 403
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $SITE/api/whatsapp-meta            # 401
 curl -s -o /dev/null -w '%{http_code}\n' -X POST $SITE/api/admin-reservations       # 401
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -d '{}' $SITE/api/payment-webhook   # 401 (con MP_WEBHOOK_SECRET)
 curl -s -o /dev/null -w '%{http_code}\n' "$SITE/api/reservations/00000000-0000-0000-0000-000000000000?t=x"            # 404
@@ -248,6 +251,6 @@ Production en una máquina de trabajo.
   `mercadopago` 2 → 3 (por `uuid`; la API del SDK cambia).
 - Vite queda en 5 (sólo afecta al servidor de desarrollo). Tarea pendiente: subir a Vite 6/7
   junto con `@vitejs/plugin-react`.
-- Twilio 5 → 6 y React Router 7 → siguiente mayor: probar en Preview antes.
+- React Router 7 → siguiente mayor: probar en Preview antes.
 - Cuando el frontend deje de usar `googleapis` (paquete grande, ~40 MB por función), quitarlo
   de `package.json`; las funciones ya usan `@googleapis/calendar` y `@googleapis/sheets`.

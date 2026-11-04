@@ -3,7 +3,7 @@
  *   - GET /api/availability        (calendario del sitio)
  *   - POST /api/create-payment     (chequeo antes de cobrar)
  *   - POST /api/payment-webhook    (re-chequeo al acreditarse la seña)
- *   - api/whatsapp-twilio.js       (respuesta del bot)
+ *   - api/whatsapp-meta.js         (respuesta del bot de WhatsApp)
  *
  * Fuentes de bloqueo (todas combinadas):
  *   reservation  → reservas con seña paga o confirmadas (Supabase)

@@ -14,11 +14,11 @@ Navegador ──► Vercel (CDN)  ── dist/            SPA Vite + React 18 (p
                  ├─ /api/payment-webhook       POST Mercado Pago (firma HMAC) → deposit_paid, Calendar, emails
                  ├─ /api/reservations/:id?t=   GET  estado de una reserva (token público)
                  ├─ /api/admin-*               POST panel admin (password → token Bearer 12 h)
-                 ├─ /api/whatsapp-twilio       POST bot de WhatsApp (Twilio + Anthropic)
+                 ├─ /api/whatsapp-meta         GET/POST bot de WhatsApp (Meta Cloud API + Grok)
                  └─ crons: keep-alive, payment-reminder, auto-cancel, send-reminders
                         │
         ┌───────────────┼──────────────────┬───────────────┬───────────────┐
-     Supabase     Google Calendar     Mercado Pago     Gmail SMTP      Twilio / Anthropic
+     Supabase     Google Calendar     Mercado Pago     Gmail SMTP      Meta / xAI Grok 
    (Postgres)    (+ Sheets de leads)   (seña)        (Nodemailer)      (bot WhatsApp)
 ```
 
@@ -70,7 +70,7 @@ públicas (van al bundle): nunca un secreto ahí.
 ## Deploy
 
 **Sólo por Git:** push a `main` → Vercel construye y publica. Nada de `vercel --prod`.
-Orden completo (migraciones en dos fases, webhooks de Mercado Pago y Twilio, Deployment
+Orden completo (migraciones en dos fases, webhooks de Mercado Pago y Meta, Deployment
 Protection, checklist de verificación) en [`DEPLOY.md`](DEPLOY.md).
 
 ## Requisitos

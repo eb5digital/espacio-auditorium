@@ -1,23 +1,11 @@
 /**
- * POST /api/whatsapp-twilio — webhook de WhatsApp (Twilio) atendido por Claude.
- *
- * Flujo por mensaje:
- *   1. Firma de Twilio (falla CERRADO si falta TWILIO_AUTH_TOKEN)
- *   2. Validación de From / Body, respuesta a audios y adjuntos
- *   3. Rate limit por teléfono (20 / 10 min y 150 / día)
- *   4. Historial en whatsapp_conversations + dedupe por MessageSid
- *   5. Pedido explícito de humano → derivación directa (sin IA)
- *   6. Disponibilidad verificada con el módulo compartido (_availability.js)
- *   7. Claude (system prompt cacheado + nota de disponibilidad)
- *   8. Señales [DERIVAR]/[CERRAR] → aviso al equipo + Google Sheets (esperados antes de responder)
- *   9. TwiML (siempre válido, incluso en errores)
- *
- * Nunca se loguea el teléfono completo ni el contenido de los mensajes (sólo longitudes).
+ * Núcleo compartido del agente de WhatsApp (independiente del proveedor de mensajería).
+ * Lo usa api/whatsapp-meta.js (Meta Cloud API + Grok). Extraído del bot anterior de Twilio
+ * (retirado) sin cambios de lógica de negocio: mismo system prompt, señales [DERIVAR]/[CERRAR],
+ * disponibilidad verificada, historial en whatsapp_conversations y hoja "Leads".
  */
 import Anthropic from '@anthropic-ai/sdk'
-import twilio from 'twilio'
-import { PUBLIC_ORIGIN, supabaseAdmin, parseBody, checkRateLimit, hashKey, logError } from './_utils.js'
-import { dayStatus } from './_availability.js'
+import { PUBLIC_ORIGIN, supabaseAdmin, logError } from './_utils.js'
 import { getSheetsClient, LEADS_SHEET_ID, hasGoogleCredentials } from './_google.js'
 import { isEmail, isIsoDate } from './_validate.js'
 import { todayLocal, TZ } from './_dates.js'
@@ -26,10 +14,9 @@ import { PRICES } from '../src/lib/pricing.js'
 // ---------------------------------------------------------------------------
 // Configuración
 // ---------------------------------------------------------------------------
-const WA_ADDRESS_RE = /^whatsapp:\+\d{8,15}$/
+export const WA_ADDRESS_RE = /^whatsapp:\+\d{8,15}$/
 
-const TWILIO_FROM = (process.env.TWILIO_WHATSAPP_FROM || '').trim()   // ej: whatsapp:+14155238886
-const TEAM_TO = (process.env.TEAM_WHATSAPP_TO || '').trim()           // ej: whatsapp:+5491138255877
+export const TEAM_TO = (process.env.TEAM_WHATSAPP_TO || '').trim()           // número del equipo para avisos, ej: whatsapp:+5491138255877
 
 /** Número (sólo dígitos) del equipo comercial para los links wa.me del bot. */
 const TEAM_PHONE_DIGITS = (
@@ -40,20 +27,20 @@ const TEAM_PHONE_DIGITS = (
 /** Número (sólo dígitos) de quien coordina visitas presenciales. */
 const VISITS_PHONE_DIGITS = (process.env.VISITS_WHATSAPP_NUMBER || '').replace(/\D/g, '') || '541136447803'
 
-const TEAM_WA_LINK = `https://wa.me/${TEAM_PHONE_DIGITS}`
+export const TEAM_WA_LINK = `https://wa.me/${TEAM_PHONE_DIGITS}`
 const VISITS_WA_LINK = `https://wa.me/${VISITS_PHONE_DIGITS}`
-const RESERVE_URL = `${PUBLIC_ORIGIN}/reservar`
+export const RESERVE_URL = `${PUBLIC_ORIGIN}/reservar`
 const TOUR_URL = 'https://my.matterport.com/show/?m=9JaMUZrVdZC'
 
-const MAX_BODY_CHARS = 1000
+export const MAX_BODY_CHARS = 1000
 const HISTORY_STORE_TURNS = 30       // turnos guardados en la base (los ve el panel admin)
 const HISTORY_MODEL_TURNS = 12       // turnos que se mandan al modelo
 const HISTORY_FULL_RECENT = 4        // los últimos N turnos van completos; el resto truncado
 const HISTORY_TRUNCATE_CHARS = 300
-const LEAD_FIELD_MAX = 120
-const LEAD_KEYS = ['fecha', 'personas', 'tipo', 'nombre', 'empresa', 'email', 'duracion', 'urgencia', 'notas']
+export const LEAD_FIELD_MAX = 120
+export const LEAD_KEYS = ['fecha', 'personas', 'tipo', 'nombre', 'empresa', 'email', 'duracion', 'urgencia', 'notas']
 
-const RATE_LIMITS = [
+export const RATE_LIMITS = [
   { bucket: 'wa:phone', max: 20, windowSeconds: 600 },
   { bucket: 'wa:phone:day', max: 150, windowSeconds: 86400 },
 ]
@@ -78,7 +65,7 @@ const PRICE_BLOCK = `- Media jornada (4 hs): ${PRICE_HALF}
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
-const SYSTEM_PROMPT = `Sos el asistente de Espacio Auditorium. Respondés consultas de WhatsApp las 24 horas, los 7 días de la semana. Tu objetivo es que el usuario reserve online — todo lo que respondés apunta a ese fin: ${RESERVE_URL}
+export const SYSTEM_PROMPT = `Sos el asistente de Espacio Auditorium. Respondés consultas de WhatsApp las 24 horas, los 7 días de la semana. Tu objetivo es que el usuario reserve online — todo lo que respondés apunta a ese fin: ${RESERVE_URL}
 
 ━━━ ESPACIO ━━━
 Nombre: Espacio Auditorium
@@ -221,14 +208,14 @@ Solo UNA señal por respuesta, siempre al final. Si no corresponde ninguna, solo
 // ---------------------------------------------------------------------------
 // Textos fijos
 // ---------------------------------------------------------------------------
-const HUMAN_RESPONSE = `Te paso con el equipo comercial.
+export const HUMAN_RESPONSE = `Te paso con el equipo comercial.
 Escribiles directo acá: ${TEAM_WA_LINK}
 Te van a atender en vivo 👍`
 
-const MEDIA_RESPONSE = 'Solo recibimos mensajes de texto por este canal. Escribinos tu consulta y te respondemos enseguida 😊'
-const TOO_LONG_RESPONSE = `Tu mensaje es muy largo para que lo pueda leer bien. ¿Me lo resumís en menos de ${MAX_BODY_CHARS} caracteres? 🙏`
-const RATE_LIMIT_RESPONSE = `Recibimos muchos mensajes seguidos desde este número. Escribinos de nuevo en un rato, o contactá directo al equipo: ${TEAM_WA_LINK} 🙏`
-const FALLBACK_RESPONSE = `Hola! En este momento no puedo responderte automáticamente. Escribinos directo al equipo: ${TEAM_WA_LINK} 🙏`
+export const MEDIA_RESPONSE = 'Solo recibimos mensajes de texto por este canal. Escribinos tu consulta y te respondemos enseguida 😊'
+export const TOO_LONG_RESPONSE = `Tu mensaje es muy largo para que lo pueda leer bien. ¿Me lo resumís en menos de ${MAX_BODY_CHARS} caracteres? 🙏`
+export const RATE_LIMIT_RESPONSE = `Recibimos muchos mensajes seguidos desde este número. Escribinos de nuevo en un rato, o contactá directo al equipo: ${TEAM_WA_LINK} 🙏`
+export const FALLBACK_RESPONSE = `Hola! En este momento no puedo responderte automáticamente. Escribinos directo al equipo: ${TEAM_WA_LINK} 🙏`
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -250,32 +237,20 @@ const HUMAN_REQUEST_RE = new RegExp(
   'i'
 )
 
-function isHumanRequest(text) {
+export function isHumanRequest(text) {
   return HUMAN_REQUEST_RE.test(text)
 }
 
 /** Teléfono enmascarado para logs: sólo los últimos 4 dígitos. */
-function maskPhone(addr) {
+export function maskPhone(addr) {
   const digits = String(addr || '').replace(/\D/g, '')
   return digits.length >= 4 ? `+…${digits.slice(-4)}` : '+…????'
 }
 
 /** Quita caracteres de control (conserva saltos de línea y tabs) y recorta. */
-function stripControl(s) {
+export function stripControl(s) {
   // eslint-disable-next-line no-control-regex
   return String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
-}
-
-function buildTwiml(text) {
-  const twiml = new twilio.twiml.MessagingResponse()
-  if (text) twiml.message(text)
-  return twiml.toString()
-}
-
-function sendTwiml(res, text, status = 200) {
-  res.setHeader('Content-Type', 'text/xml')
-  res.setHeader('Cache-Control', 'no-store')
-  return res.status(status).send(buildTwiml(text))
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +258,7 @@ function sendTwiml(res, text, status = 200) {
 // ---------------------------------------------------------------------------
 
 /** Limpia un valor de lead que escribió el modelo (eco de texto del cliente). */
-function cleanLeadValue(v) {
+export function cleanLeadValue(v) {
   let t = stripControl(v)
     .replace(/https?:\/\/\S+/gi, '')
     .replace(/\s+/g, ' ')
@@ -292,7 +267,7 @@ function cleanLeadValue(v) {
   return t.slice(0, LEAD_FIELD_MAX)
 }
 
-function parseSignal(raw) {
+export function parseSignal(raw) {
   const text = String(raw || '').trimEnd()
   const lines = text.split('\n')
   const last = lines[lines.length - 1].trim()
@@ -329,7 +304,7 @@ function parseSignal(raw) {
   return { message: text.trim(), action: 'continue', lead: null }
 }
 
-function formatTeamMsg(lead, phoneAddr, header = 'LEAD CALIFICADO') {
+export function formatTeamMsg(lead, phoneAddr, header = 'LEAD CALIFICADO') {
   const L = (emoji, label, val) => (val ? `${emoji} *${label}:* ${val}\n` : '')
   const body =
     `🎯 *${header} — Espacio Auditorium*\n` +
@@ -346,32 +321,6 @@ function formatTeamMsg(lead, phoneAddr, header = 'LEAD CALIFICADO') {
     `📱 *WhatsApp:* ${phoneAddr.replace('whatsapp:', '')}\n\n` +
     `→ Responsable: Emiliano / Equipo Comercial`
   return body.slice(0, 1500)
-}
-
-// ---------------------------------------------------------------------------
-// Twilio (aviso al equipo)
-// ---------------------------------------------------------------------------
-let _twilioClient = null
-function twilioClient() {
-  if (_twilioClient) return _twilioClient
-  const sid = (process.env.TWILIO_ACCOUNT_SID || '').trim()
-  const token = (process.env.TWILIO_AUTH_TOKEN || '').trim()
-  if (!sid || !token) throw new Error('TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN no configurados')
-  _twilioClient = twilio(sid, token, { timeout: 5000 })
-  return _twilioClient
-}
-
-async function notifyTeam(body) {
-  if (!TEAM_TO || !TWILIO_FROM) {
-    console.warn('[wa] TEAM_WHATSAPP_TO/TWILIO_WHATSAPP_FROM no configurados: no se avisa al equipo')
-    return
-  }
-  if (!WA_ADDRESS_RE.test(TEAM_TO) || !WA_ADDRESS_RE.test(TWILIO_FROM)) {
-    console.error('[wa] TEAM_WHATSAPP_TO o TWILIO_WHATSAPP_FROM con formato inválido (esperado whatsapp:+549...)')
-    return
-  }
-  await twilioClient().messages.create({ from: TWILIO_FROM, to: TEAM_TO, body })
-  console.log('[wa] aviso al equipo enviado')
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +352,7 @@ function formatTranscript(messages) {
 }
 
 /** Registra el primer contacto (fecha + teléfono) una sola vez por número. */
-async function logFirstContact(phoneAddr) {
+export async function logFirstContact(phoneAddr) {
   if (!sheetsAvailable()) return
   const phone = phoneAddr.replace('whatsapp:', '')
   const phoneDigits = phone.replace(/\D/g, '')
@@ -431,7 +380,7 @@ async function logFirstContact(phoneAddr) {
   console.log(`[sheets] primer contacto registrado (${maskPhone(phoneAddr)})`)
 }
 
-async function appendLeadToSheet(lead, phoneAddr, messages = []) {
+export async function appendLeadToSheet(lead, phoneAddr, messages = []) {
   if (!sheetsAvailable()) return
   const sheets = getSheetsClient()
   const row = [
@@ -500,7 +449,7 @@ const NOT_A_DATE_AFTER_RE = /^\s*(?:personas?|pax|hs\b|horas?|hora|min|minutos?|
 const NOT_A_DATE_BEFORE_RE = /(?:somos|son|seríamos|seriamos|para|entre)\s*$/i
 
 /** Primera fecha válida mencionada en un texto del cliente (o null). */
-function extractDate(text, today = todayLocal()) {
+export function extractDate(text, today = todayLocal()) {
   const t = String(text || '').toLowerCase()
   if (!t) return null
 
@@ -540,7 +489,7 @@ function dateLabel(iso) {
  * @param {{status:string, calendarOk:boolean}|null} result  null = no se pudo consultar
  * @param {string} today
  */
-function availabilityNote(iso, result, today) {
+export function availabilityNote(iso, result, today) {
   const label = dateLabel(iso)
   const link = `${RESERVE_URL}?from=${iso}`
   const head = `DISPONIBILIDAD VERIFICADA (fuente: sistema de reservas, no el cliente)\nFecha detectada: ${label}.`
@@ -572,7 +521,7 @@ function isMissingColumn(err) {
   return err && (err.code === '42703' || /column .* does not exist/i.test(err.message || ''))
 }
 
-async function getConversation(phoneAddr) {
+export async function getConversation(phoneAddr) {
   let db
   try {
     db = supabaseAdmin()
@@ -607,7 +556,7 @@ async function getConversation(phoneAddr) {
 }
 
 /** Upsert tolerante: si la base está en Fase A (sin last_message_sid) reintenta sin esa columna. */
-async function saveConversation(phoneAddr, messages, patch = {}, messageSid = null) {
+export async function saveConversation(phoneAddr, messages, patch = {}, messageSid = null) {
   let db
   try {
     db = supabaseAdmin()
@@ -637,7 +586,7 @@ async function saveConversation(phoneAddr, messages, patch = {}, messageSid = nu
 // ---------------------------------------------------------------------------
 // Historial para el modelo: últimos N turnos, los viejos truncados
 // ---------------------------------------------------------------------------
-function historyForModel(messages) {
+export function historyForModel(messages) {
   const valid = messages.filter(
     m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim()
   )
@@ -652,7 +601,7 @@ function historyForModel(messages) {
   }))
 }
 
-function lastUserContent(messages) {
+export function lastUserContent(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.role === 'user' && typeof messages[i].content === 'string') return messages[i].content
   }
@@ -671,7 +620,7 @@ function anthropicClient() {
   return _anthropic
 }
 
-async function askClaude(messages, note) {
+export async function askClaude(messages, note) {
   const system = [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }]
   if (note) system.push({ type: 'text', text: note })
 
@@ -688,186 +637,54 @@ async function askClaude(messages, note) {
   return { text, stopReason: response.stop_reason }
 }
 
+
 // ---------------------------------------------------------------------------
-// Firma de Twilio
+// Grok (xAI) — API compatible con OpenAI
 // ---------------------------------------------------------------------------
-function configuredWebhookUrl() {
-  const explicit = (process.env.TWILIO_WEBHOOK_URL || '').trim()
-  return explicit || `${PUBLIC_ORIGIN}/api/whatsapp-twilio`
+const XAI_URL = 'https://api.x.ai/v1/chat/completions'
+
+export async function askGrok(messages, note) {
+  const apiKey = (process.env.XAI_API_KEY || '').trim()
+  if (!apiKey) throw new Error('XAI_API_KEY no configurada')
+  const system = note ? `${SYSTEM_PROMPT}\n\n${note}` : SYSTEM_PROMPT
+  const resp = await fetch(XAI_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: (process.env.XAI_MODEL || 'grok-4').trim(),
+      max_tokens: 700,
+      temperature: 0.4,
+      messages: [{ role: 'system', content: system }, ...messages],
+    }),
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!resp.ok) {
+    const detail = (await resp.text()).slice(0, 300)
+    throw new Error(`xAI ${resp.status}: ${detail}`)
+  }
+  const data = await resp.json()
+  const choice = data.choices?.[0] || {}
+  let text = typeof choice.message?.content === 'string' ? choice.message.content : ''
+  if (choice.finish_reason === 'length' && text) text = text.trimEnd() + '…'
+  return { text, stopReason: choice.finish_reason || 'unknown' }
 }
 
-function headerDerivedUrl(req) {
-  const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim()
-  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim()
-  if (!host) return null
-  return `${proto}://${host}${req.url || '/api/whatsapp-twilio'}`
-}
-
-/** @returns {{ok:true, matched:'configured'|'headers'} | {ok:false}} */
-function verifyTwilioSignature(req, params, authToken) {
-  const signature = req.headers['x-twilio-signature']
-  if (!signature || typeof signature !== 'string') return { ok: false }
-  const configured = configuredWebhookUrl()
+/**
+ * Proveedor de IA: WA_LLM_PROVIDER = 'xai' | 'anthropic'.
+ * Por defecto Grok si hay XAI_API_KEY; si no, Claude. Si el elegido falla y el otro
+ * está configurado, se usa el otro como respaldo (mejor responder que caer al fallback fijo).
+ */
+export async function askModel(messages, note) {
+  const hasXai = !!(process.env.XAI_API_KEY || '').trim()
+  const hasAnthropic = !!(process.env.ANTHROPIC_API_KEY || '').trim()
+  const pref = (process.env.WA_LLM_PROVIDER || (hasXai ? 'xai' : 'anthropic')).trim().toLowerCase()
+  const primary = pref === 'anthropic' ? askClaude : askGrok
+  const backup = pref === 'anthropic' ? (hasXai ? askGrok : null) : (hasAnthropic ? askClaude : null)
   try {
-    if (twilio.validateRequest(authToken, signature, configured, params)) return { ok: true, matched: 'configured' }
-    const derived = headerDerivedUrl(req)
-    if (derived && derived !== configured && twilio.validateRequest(authToken, signature, derived, params)) {
-      console.warn(`[wa:security] firma válida sólo con la URL derivada de headers (${derived}); revisá TWILIO_WEBHOOK_URL (${configured})`)
-      return { ok: true, matched: 'headers' }
-    }
+    return { ...(await primary(messages, note)), provider: pref }
   } catch (err) {
-    logError('wa:security', err)
-  }
-  return { ok: false }
-}
-
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST')
-    return sendTwiml(res, null, 405)
-  }
-
-  // 1. Firma: falla cerrado si no podemos verificarla.
-  const authToken = (process.env.TWILIO_AUTH_TOKEN || '').trim()
-  if (!authToken) {
-    console.error('[wa:security] TWILIO_AUTH_TOKEN no configurada: se rechaza el webhook')
-    return sendTwiml(res, null, 503)
-  }
-
-  const params = parseBody(req)
-  const sig = verifyTwilioSignature(req, params, authToken)
-  if (!sig.ok) {
-    console.error(`[wa:security] firma de Twilio inválida; URL configurada: ${configuredWebhookUrl()}`)
-    return sendTwiml(res, null, 403)
-  }
-
-  // 2. Remitente y contenido
-  const phone = typeof params.From === 'string' ? params.From.trim() : ''
-  if (!WA_ADDRESS_RE.test(phone)) {
-    console.error('[wa] From con formato inválido; se ignora')
-    return sendTwiml(res, null)
-  }
-  const who = maskPhone(phone)
-  const messageSid = typeof params.MessageSid === 'string' && /^[A-Za-z0-9]{1,64}$/.test(params.MessageSid)
-    ? params.MessageSid
-    : (typeof params.SmsMessageSid === 'string' && /^[A-Za-z0-9]{1,64}$/.test(params.SmsMessageSid) ? params.SmsMessageSid : null)
-
-  const rawBody = typeof params.Body === 'string' ? params.Body : ''
-  const userText = stripControl(rawBody).replace(/\r\n?/g, '\n').trim()
-  const mediaType = String(params.MediaContentType0 || '').toLowerCase()
-  const hasMedia = !!params.MediaUrl0 || Number(params.NumMedia || 0) > 0
-
-  if (mediaType.startsWith('audio/') || (hasMedia && !userText)) {
-    console.log(`[wa] ${who}: adjunto (${mediaType || 'media'}) → respuesta fija`)
-    return sendTwiml(res, MEDIA_RESPONSE)
-  }
-  if (!userText) return sendTwiml(res, null)
-  if (userText.length > MAX_BODY_CHARS) {
-    console.log(`[wa] ${who}: mensaje demasiado largo (${userText.length} chars)`)
-    return sendTwiml(res, TOO_LONG_RESPONSE)
-  }
-
-  console.log(`[wa:in] ${who} len=${userText.length}${messageSid ? ' sid=' + messageSid : ''}`)
-
-  try {
-    // 3 + 4. Rate limit e historial (en paralelo)
-    const phoneKey = hashKey(phone)
-    const [limits, conv] = await Promise.all([
-      Promise.all(RATE_LIMITS.map(l => checkRateLimit({ ...l, key: phoneKey }))),
-      getConversation(phone),
-    ])
-    const blocked = limits.find(l => !l.allowed)
-    if (blocked) {
-      console.warn(`[wa] ${who}: rate limit alcanzado`)
-      return sendTwiml(res, RATE_LIMIT_RESPONSE)
-    }
-
-    if (messageSid && conv.last_message_sid && conv.last_message_sid === messageSid) {
-      console.log(`[wa] ${who}: MessageSid repetido, se ignora`)
-      return sendTwiml(res, null)
-    }
-
-    const baseLeadData = conv.lead_data || {}
-    const needsSheetLog = !baseLeadData.sheet_logged
-    const messages = [...conv.messages, { role: 'user', content: userText }]
-    // Una conversación cerrada que vuelve a escribir se reabre.
-    const statusPatch = conv.status === 'closed' ? { status: 'active' } : {}
-
-    // 5. Derivación directa (sin IA) ante un pedido explícito de humano
-    if (isHumanRequest(userText)) {
-      const updated = [...messages, { role: 'assistant', content: HUMAN_RESPONSE }]
-      const ld = { ...baseLeadData, derivacion_manual: 'si', sheet_logged: true }
-      await saveConversation(phone, updated, { status: 'qualified', lead_data: ld }, messageSid)
-
-      const knownLead = Object.fromEntries(LEAD_KEYS.filter(k => baseLeadData[k]).map(k => [k, cleanLeadValue(baseLeadData[k])]))
-      knownLead.notas = [knownLead.notas, 'Pidió hablar con una persona'].filter(Boolean).join(' · ').slice(0, LEAD_FIELD_MAX)
-      const tasks = [notifyTeam(formatTeamMsg(knownLead, phone, 'PIDE HABLAR CON EL EQUIPO'))]
-      if (needsSheetLog) tasks.push(logFirstContact(phone))
-      const results = await Promise.allSettled(tasks)
-      results.forEach((r, i) => { if (r.status === 'rejected') logError(i === 0 ? 'wa:team-notify' : 'wa:sheets:first-contact', r.reason) })
-
-      console.log(`[wa:out] ${who} action=human`)
-      return sendTwiml(res, HUMAN_RESPONSE)
-    }
-
-    // 6. Disponibilidad: sólo fechas del mensaje actual (o del último turno previo del cliente)
-    const today = todayLocal()
-    const mentionedDate = extractDate(userText, today) || extractDate(lastUserContent(conv.messages), today)
-    let note = null
-    if (mentionedDate) {
-      if (mentionedDate < today) {
-        note = availabilityNote(mentionedDate, null, today)
-      } else {
-        try {
-          const result = await dayStatus(mentionedDate)
-          if (!result.calendarOk) console.warn(`[wa:availability] ${mentionedDate}: agenda no verificable (${result.calendarError || 'sin detalle'})`)
-          note = availabilityNote(mentionedDate, result, today)
-          console.log(`[wa:availability] ${mentionedDate} → ${result.calendarOk ? result.status : 'no verificada'}`)
-        } catch (err) {
-          logError('wa:availability', err)
-          note = availabilityNote(mentionedDate, null, today)
-        }
-      }
-    }
-
-    // 7. Claude
-    const { text: raw, stopReason } = await askClaude(historyForModel(messages), note)
-    if (!raw.trim()) throw new Error(`Respuesta vacía del modelo (stop_reason=${stopReason})`)
-
-    const parsed = parseSignal(raw)
-    const message = parsed.message || (parsed.action === 'qualify' ? HUMAN_RESPONSE : 'Solo puedo ayudarte con consultas sobre Espacio Auditorium.')
-    const { action, lead } = parsed
-    console.log(`[wa:out] ${who} action=${action} len=${message.length} stop=${stopReason}`)
-
-    const updated = [...messages, { role: 'assistant', content: message }]
-
-    // 8. Persistencia + avisos (esperados antes de responder)
-    const tasks = []
-    const labels = []
-    if (action === 'qualify' && lead) {
-      const leadData = { ...baseLeadData, ...lead, sheet_logged: true }
-      await saveConversation(phone, updated, { status: 'qualified', lead_data: leadData }, messageSid)
-      tasks.push(notifyTeam(formatTeamMsg(lead, phone))); labels.push('wa:team-notify')
-      tasks.push(appendLeadToSheet(lead, phone, updated)); labels.push('wa:sheets:lead')
-    } else if (action === 'close') {
-      await saveConversation(phone, updated, { status: 'closed', lead_data: { ...baseLeadData, sheet_logged: true } }, messageSid)
-    } else {
-      await saveConversation(phone, updated, { ...statusPatch, lead_data: { ...baseLeadData, sheet_logged: true } }, messageSid)
-    }
-    if (needsSheetLog) {
-      tasks.push(logFirstContact(phone)); labels.push('wa:sheets:first-contact')
-    }
-    if (tasks.length) {
-      const results = await Promise.allSettled(tasks)
-      results.forEach((r, i) => { if (r.status === 'rejected') logError(labels[i], r.reason) })
-    }
-
-    return sendTwiml(res, message)
-  } catch (err) {
-    logError('wa:handler', err, { phone: who })
-    return sendTwiml(res, FALLBACK_RESPONSE)
+    if (!backup) throw err
+    logError('wa:llm-primary', err)
+    return { ...(await backup(messages, note)), provider: pref === 'anthropic' ? 'xai' : 'anthropic' }
   }
 }

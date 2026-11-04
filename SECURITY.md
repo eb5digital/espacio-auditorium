@@ -25,7 +25,7 @@ Complementa a `DEPLOY.md` (cómo se despliega) y `docs/RUNBOOK.md` (operación d
 |-----------|--------------|---------|
 | `POST /api/create-payment` | público | validación server-side de fechas/precio, Turnstile (opcional), rate limit por IP (10/h) y por email (5/día), chequeo de disponibilidad que falla cerrado si Google no responde |
 | `POST /api/payment-webhook` | Mercado Pago | firma HMAC `x-signature` con `MP_WEBHOOK_SECRET`, re-consulta del pago en MP, verificación de monto/moneda/`live_mode`, idempotencia por estado, UNIQUE en `mp_payment_id` |
-| `POST /api/whatsapp-twilio` | Twilio | firma `X-Twilio-Signature` sobre `TWILIO_WEBHOOK_URL` (falla cerrado), rate limit por teléfono, dedupe por `MessageSid`, timeout 9 s a Anthropic |
+| `POST /api/whatsapp-meta` | Meta | firma `X-Hub-Signature-256` con `META_APP_SECRET` (falla cerrado), rate limit por teléfono, dedupe por id de mensaje, timeout 15 s a Grok |
 | `GET /api/availability` | público | sólo devuelve fechas/franjas (sin datos personales), caché 60 s |
 | `GET /api/reservations/:id?t=` | cliente que pagó | UUID + token aleatorio `public_token`; campos mínimos; `no-store` |
 | `POST /api/admin-*` | dueño | password con rate limit por IP (5 intentos / 15 min, comparación en tiempo constante) → token firmado HMAC 12 h en `Authorization: Bearer`; `/admin` con `noindex` y `no-store` |
