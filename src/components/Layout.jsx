@@ -67,7 +67,7 @@ export function SiteFooter() {
       </div>
 
       <div className="footer-bottom">
-        <span>© 2026 Espacio Auditorium · Todos los derechos reservados</span>
+        <span>© 2026 Espacio Auditorium · Todos los derechos reservados · <Link to="/privacidad" className="footer-link" style={{ display: 'inline' }}>Política de privacidad</Link></span>
         <a href="https://www.emibugliolo.com/" target="_blank" rel="noopener noreferrer">
           Desarrollado por emibugliolo.com
         </a>
