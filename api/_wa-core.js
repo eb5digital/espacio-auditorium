@@ -1,10 +1,8 @@
 /**
  * Núcleo compartido del agente de WhatsApp (independiente del proveedor de mensajería).
- * Lo usa api/whatsapp-meta.js (Meta Cloud API + Grok). Extraído de api/whatsapp-twilio.js
- * sin cambios de lógica de negocio: mismo system prompt, señales [DERIVAR]/[CERRAR],
+ * Lo usa api/whatsapp-meta.js (Meta Cloud API + Grok). Extraído del bot anterior de Twilio
+ * (retirado) sin cambios de lógica de negocio: mismo system prompt, señales [DERIVAR]/[CERRAR],
  * disponibilidad verificada, historial en whatsapp_conversations y hoja "Leads".
- *
- * Cuando se dé de baja Twilio, borrar api/whatsapp-twilio.js: este archivo queda como única fuente.
  */
 import Anthropic from '@anthropic-ai/sdk'
 import { PUBLIC_ORIGIN, supabaseAdmin, logError } from './_utils.js'
@@ -18,7 +16,7 @@ import { PRICES } from '../src/lib/pricing.js'
 // ---------------------------------------------------------------------------
 export const WA_ADDRESS_RE = /^whatsapp:\+\d{8,15}$/
 
-export const TEAM_TO = (process.env.TEAM_WHATSAPP_TO || '').trim()           // ej: whatsapp:+5491138255877
+export const TEAM_TO = (process.env.TEAM_WHATSAPP_TO || '').trim()           // número del equipo para avisos, ej: whatsapp:+5491138255877
 
 /** Número (sólo dígitos) del equipo comercial para los links wa.me del bot. */
 const TEAM_PHONE_DIGITS = (

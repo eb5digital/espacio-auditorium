@@ -1,7 +1,7 @@
 /**
  * /api/whatsapp-meta — webhook de WhatsApp (Meta Cloud API oficial) atendido por Grok.
  *
- * Reemplaza a /api/whatsapp-twilio sin intermediarios. Misma lógica de negocio
+ * Reemplazó al bot de Twilio (retirado), sin intermediarios. Misma lógica de negocio
  * (api/_wa-core.js): system prompt, disponibilidad verificada, derivación, hoja "Leads",
  * historial en whatsapp_conversations (lo sigue viendo el panel /admin).
  *
