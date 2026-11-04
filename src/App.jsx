@@ -17,6 +17,7 @@ const CapacitacionesPage = lazy(() => import('./pages/CapacitacionesPage'))
 const WorkshopsPage = lazy(() => import('./pages/WorkshopsPage'))
 const PodcastStreamingPage = lazy(() => import('./pages/PodcastStreamingPage'))
 const LanzamientosPage = lazy(() => import('./pages/LanzamientosPage'))
+const PrivacidadPage = lazy(() => import('./pages/PrivacidadPage'))
 
 function RouteFallback() {
   return <div style={{ minHeight: '100vh' }} aria-busy="true" aria-label="Cargando" />
@@ -53,6 +54,7 @@ export default function App() {
             <Route path="/workshops" element={<WorkshopsPage />} />
             <Route path="/podcast-y-streaming" element={<PodcastStreamingPage />} />
             <Route path="/lanzamientos" element={<LanzamientosPage />} />
+            <Route path="/privacidad" element={<PrivacidadPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>

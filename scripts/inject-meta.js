@@ -49,6 +49,12 @@ const routes = [
     canonical: 'https://www.espacioauditorium.com.ar/lanzamientos',
   },
   {
+    path: 'privacidad',
+    title: 'Política de Privacidad | Espacio Auditorium',
+    description: 'Cómo Espacio Auditorium recopila, usa y protege los datos personales de quienes consultan y reservan por la web y por WhatsApp.',
+    canonical: 'https://www.espacioauditorium.com.ar/privacidad',
+  },
+  {
     path: 'workshops',
     title: 'Sala para Workshops en Recoleta, CABA | Espacio Auditorium',
     description: 'Espacio flexible para workshops de hasta 36 personas en Recoleta, CABA. 3 salas incluidas, TV HDMI, rotafolio y WiFi. Sin intermediarios, reserva online con precio instantáneo.',
