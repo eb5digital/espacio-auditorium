@@ -1,6 +1,6 @@
 /**
- * Cron diario combinado: agrupa 4 tareas (recordatorio de saldo,
- * recordatorio de pago pendiente, auto-cancelación, seguimiento por WhatsApp) en una sola Serverless
+ * Cron diario combinado: agrupa 5 tareas (recordatorio de saldo,
+ * recordatorio de pago pendiente, auto-cancelación, seguimiento por WhatsApp, resumen WhatsApp) en una sola Serverless
  * Function, porque el plan Hobby de Vercel permite máximo 2 cron jobs.
  *
  * Cada tarea corre igual aunque otra falle; se capturan sus respuestas
@@ -12,6 +12,7 @@ import sendReminders from './_send-reminders.js'
 import paymentReminder from './_payment-reminder.js'
 import autoCancel from './_auto-cancel.js'
 import waFollowup from './_wa-followup.js'
+import waDigest from './_wa-digest.js'
 
 function captureRes() {
   const state = { statusCode: 200, body: null, headers: {} }
@@ -46,6 +47,8 @@ export default async function handler(req, res) {
     autoCancel: await run('auto-cancel', autoCancel, req),
     // Seguimiento por WhatsApp (Meta): no hace nada hasta WA_FOLLOWUP_ENABLED=true + plantilla aprobada.
     waFollowup: await run('wa-followup', waFollowup, req),
+    // Resumen diario por mail (pendientes de atender + actividad 24 h). Se apaga con WA_DIGEST_ENABLED=false.
+    waDigest: await run('wa-digest', waDigest, req),
   }
 
   res.status(200).json({ ok: true, results })
