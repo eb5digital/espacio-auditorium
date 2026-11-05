@@ -634,7 +634,9 @@ export async function askClaude(messages, note) {
 
   let text = response.content.find(b => b.type === 'text')?.text ?? ''
   if (response.stop_reason === 'max_tokens' && text) text = text.trimEnd() + '…'
-  return { text, stopReason: response.stop_reason }
+  const u = response.usage || {}
+  const usage = { in: u.input_tokens || 0, cr: u.cache_read_input_tokens || 0, cw: u.cache_creation_input_tokens || 0, out: u.output_tokens || 0 }
+  return { text, stopReason: response.stop_reason, usage }
 }
 
 
@@ -666,7 +668,10 @@ export async function askGrok(messages, note) {
   const choice = data.choices?.[0] || {}
   let text = typeof choice.message?.content === 'string' ? choice.message.content : ''
   if (choice.finish_reason === 'length' && text) text = text.trimEnd() + '…'
-  return { text, stopReason: choice.finish_reason || 'unknown' }
+  const u = data.usage || {}
+  const cached = u.prompt_tokens_details?.cached_tokens || 0
+  const usage = { in: Math.max(0, (u.prompt_tokens || 0) - cached), cr: cached, cw: 0, out: u.completion_tokens || 0 }
+  return { text, stopReason: choice.finish_reason || 'unknown', usage }
 }
 
 /**
@@ -687,4 +692,23 @@ export async function askModel(messages, note) {
     logError('wa:llm-primary', err)
     return { ...(await backup(messages, note)), provider: pref === 'anthropic' ? 'xai' : 'anthropic' }
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Consumo de IA por conversación (lead_data.ai_usage), para el panel de costos.
+// Forma: { 'YYYY-MM': { anthropic: { calls, in, cr, cw, out }, xai: {...} } } — guarda 3 meses.
+// ---------------------------------------------------------------------------
+export function addAiUsage(prev, provider, usage, now = new Date()) {
+  if (!usage) return prev
+  const month = now.toISOString().slice(0, 7)
+  const all = { ...(prev && typeof prev === 'object' ? prev : {}) }
+  const m = { ...(all[month] || {}) }
+  const p = { calls: 0, in: 0, cr: 0, cw: 0, out: 0, ...(m[provider] || {}) }
+  p.calls += 1
+  for (const k of ['in', 'cr', 'cw', 'out']) p[k] += Number(usage[k]) || 0
+  m[provider] = p
+  all[month] = m
+  for (const k of Object.keys(all).sort().slice(0, -3)) delete all[k]
+  return all
 }

@@ -79,6 +79,9 @@ export default function AdminPage() {
   const [waFilter, setWaFilter] = useState('pending')
   const [waSelected, setWaSelected] = useState(null)
   const [waError, setWaError] = useState('')
+  const [costs, setCosts] = useState(null)
+  const [costsLoading, setCostsLoading] = useState(false)
+  const [costsError, setCostsError] = useState('')
 
   const logout = useCallback((message) => {
     clearToken()
@@ -160,6 +163,22 @@ export default function AdminPage() {
     const iv = setInterval(() => { if (document.visibilityState === 'visible') fetchWaConversations() }, 60000)
     return () => clearInterval(iv)
   }, [authed, tab, fetchWaConversations])
+
+  const fetchCosts = useCallback(async () => {
+    setCostsLoading(true)
+    setCostsError('')
+    try {
+      setCosts(await adminPost('/api/admin-costs', {}, { onUnauthorized }))
+    } catch (err) {
+      if (err?.status !== 401) setCostsError(errMsg(err))
+    } finally {
+      setCostsLoading(false)
+    }
+  }, [onUnauthorized])
+
+  useEffect(() => {
+    if (authed && tab === 'costs') fetchCosts()
+  }, [authed, tab, fetchCosts])
 
   const handleAddBlock = async (e) => {
     e.preventDefault()
@@ -309,6 +328,7 @@ export default function AdminPage() {
             { key: 'reservations', label: 'Reservas' },
             { key: 'blocked', label: 'Bloquear fechas' },
             { key: 'whatsapp', label: 'WhatsApp' },
+            { key: 'costs', label: 'Costos' },
           ].map(t => (
             <button
               key={t.key}
@@ -554,6 +574,9 @@ export default function AdminPage() {
             </div>
           )}
         </>)}
+        {tab === 'costs' && (
+          <CostsPanel data={costs} loading={costsLoading} error={costsError} onRefresh={fetchCosts} />
+        )}
       </div>
 
       {selected && (
@@ -563,6 +586,85 @@ export default function AdminPage() {
         <WaConversationModal conversation={waSelected} onClose={() => setWaSelected(null)} onMarkHandled={markWaHandled} />
       )}
     </div>
+  )
+}
+
+const USD = (n) => `US$ ${Number(n || 0).toFixed(2)}`
+const META_CATEGORY = { SERVICE: 'Atención (respuestas)', MARKETING: 'Marketing (plantillas)', UTILITY: 'Utilidad (plantillas)', AUTHENTICATION: 'Autenticación' }
+
+function CostsPanel({ data, loading, error, onRefresh }) {
+  if (loading && !data) {
+    return <div style={{ textAlign: 'center', padding: '3rem' }} aria-busy="true"><span className="spinner" style={{ margin: '0 auto' }} /></div>
+  }
+  if (error) return <div className="alert-box alert-error" role="alert">{error}</div>
+  if (!data) return null
+  const { meta = {}, ai = {} } = data
+  const metaMoney = (n) => (meta.currency === 'ARS' ? formatARS(n) : `${meta.currency || ''} ${Number(n || 0).toFixed(2)}`)
+  const cats = Object.entries(meta.byCategory || {})
+  const providers = Object.entries(ai.byProvider || {})
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '1rem' }}>
+        <p style={{ color: 'var(--app-muted)', fontSize: '0.88rem' }}>Mes en curso: <b>{data.month}</b></p>
+        <button type="button" className="btn btn-sm btn-ghost-app" style={{ marginLeft: 'auto' }} onClick={onRefresh} disabled={loading}>↻ Actualizar</button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
+        <StatCard label="Meta (WhatsApp)" value={meta.error ? '—' : metaMoney(meta.total)} accent />
+        <StatCard label="IA (estimado)" value={USD(ai.totalUsd)} />
+        <StatCard label="Respuestas IA" value={ai.calls || 0} />
+        <StatCard label="Costo por respuesta" value={ai.calls ? `US$ ${ai.perReplyUsd.toFixed(4)}` : '—'} />
+      </div>
+
+      <div className="card" style={{ marginBottom: '1.25rem' }}>
+        <h3 style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>Meta — mensajes del mes</h3>
+        {meta.error ? (
+          <p style={{ color: '#ef9a9a', fontSize: '0.88rem' }}>No se pudo leer Meta: {meta.error}</p>
+        ) : (
+          <>
+            <p style={{ fontSize: '0.88rem', color: 'var(--app-muted)', marginBottom: '0.75rem' }}>
+              {meta.free || 0} mensajes gratis · {meta.paid || 0} cobrados. Las respuestas dentro de las 24 h de que el cliente escribe son gratis; se cobran las plantillas.
+            </p>
+            {cats.length === 0 ? <p style={{ fontSize: '0.88rem', color: 'var(--app-dim)' }}>Sin mensajes facturables registrados todavía.</p> : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem' }}>
+                <tbody>
+                  {cats.map(([k, v]) => (
+                    <tr key={k} style={{ borderBottom: '1px solid #1a1a1a' }}>
+                      <td style={tdStyle}>{META_CATEGORY[k] || k}</td>
+                      <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--app-muted)' }}>{v.volume} msgs</td>
+                      <td style={{ ...tdStyle, textAlign: 'right' }}>{metaMoney(v.cost)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="card" style={{ marginBottom: '1.25rem' }}>
+        <h3 style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>IA — respuestas del bot</h3>
+        {providers.length === 0 ? <p style={{ fontSize: '0.88rem', color: 'var(--app-dim)' }}>Todavía no hay consumo registrado este mes.</p> : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem' }}>
+            <tbody>
+              {providers.map(([k, v]) => (
+                <tr key={k} style={{ borderBottom: '1px solid #1a1a1a' }}>
+                  <td style={tdStyle}>{k === 'xai' ? 'Grok (xAI)' : 'Claude (Anthropic)'}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--app-muted)' }}>{v.calls} respuestas · {Math.round((v.in + v.cr + v.cw + v.out) / 1000)}k tokens</td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{USD(v.costUsd)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p style={{ fontSize: '0.78rem', color: 'var(--app-dim)', marginTop: '0.75rem' }}>
+          Estimado con precios de lista y registrado desde el {data.trackingSince}. El valor exacto está en la consola de cada proveedor.
+        </p>
+      </div>
+
+      <p style={{ fontSize: '0.8rem', color: 'var(--app-dim)' }}>
+        Infraestructura (Vercel Hobby, Supabase) en plan gratuito: US$ 0. Facturación oficial: Meta → Administrador de WhatsApp → Facturación.
+      </p>
+    </>
   )
 }
 

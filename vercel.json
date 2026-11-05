@@ -55,6 +55,10 @@
       "destination": "/api/admin?action=reservations"
     },
     {
+      "source": "/api/admin-costs",
+      "destination": "/api/admin?action=costs"
+    },
+    {
       "source": "/api/admin-wa-conversations",
       "destination": "/api/admin?action=wa-conversations"
     },

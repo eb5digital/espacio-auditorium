@@ -29,7 +29,7 @@ import {
   HUMAN_RESPONSE, MEDIA_RESPONSE, TOO_LONG_RESPONSE, RATE_LIMIT_RESPONSE, FALLBACK_RESPONSE,
   isHumanRequest, maskPhone, stripControl, cleanLeadValue, parseSignal, formatTeamMsg,
   logFirstContact, appendLeadToSheet, extractDate, availabilityNote,
-  getConversation, saveConversation, historyForModel, lastUserContent, askModel,
+  getConversation, saveConversation, historyForModel, lastUserContent, askModel, addAiUsage,
 } from './_wa-core.js'
 
 const GRAPH = (process.env.WA_GRAPH_VERSION || 'v23.0').trim()
@@ -228,7 +228,8 @@ async function processMessage(m, contact) {
     }
 
     // IA (Grok por defecto, Claude de respaldo si está configurado)
-    const { text: raw, stopReason, provider } = await askModel(historyForModel(messages), note)
+    const { text: raw, stopReason, provider, usage } = await askModel(historyForModel(messages), note)
+    baseLeadData.ai_usage = addAiUsage(baseLeadData.ai_usage, provider, usage)
     if (!raw.trim()) throw new Error(`Respuesta vacía del modelo (${provider}, ${stopReason})`)
     const parsed = parseSignal(raw)
     const message = parsed.message || (parsed.action === 'qualify' ? HUMAN_RESPONSE : 'Solo puedo ayudarte con consultas sobre Espacio Auditorium.')
