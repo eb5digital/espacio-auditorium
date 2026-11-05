@@ -625,7 +625,7 @@ export async function askClaude(messages, note) {
   if (note) system.push({ type: 'text', text: note })
 
   const response = await anthropicClient().messages.create({
-    model: 'claude-sonnet-5',
+    model: (process.env.ANTHROPIC_MODEL || 'claude-sonnet-5').trim(),
     max_tokens: 700,
     thinking: { type: 'disabled' },
     system,
