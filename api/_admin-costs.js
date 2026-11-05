@@ -11,11 +11,11 @@ import { handleOptions, json, error, safeError, requireAdmin, supabaseAdmin, log
 const GRAPH = (process.env.WA_GRAPH_VERSION || 'v23.0').trim()
 const WABA_ID = (process.env.WA_WABA_ID || '1138666552357847').trim()
 
-// USD por millón de tokens. Precios de lista aproximados: verificarlos y ajustarlos por env si cambian.
+// USD por millón de tokens. xAI: grok-4.1-fast. Precios de lista aproximados: verificarlos y ajustarlos por env si cambian.
 function prices(provider) {
   const env = (k, d) => Number(process.env[k]) || d
   if (provider === 'xai') {
-    return { in: env('AI_PRICE_XAI_IN', 3), cr: env('AI_PRICE_XAI_CACHED', 0.75), cw: 0, out: env('AI_PRICE_XAI_OUT', 15) }
+    return { in: env('AI_PRICE_XAI_IN', 0.2), cr: env('AI_PRICE_XAI_CACHED', 0.05), cw: 0, out: env('AI_PRICE_XAI_OUT', 0.5) }
   }
   return { in: env('AI_PRICE_ANTHROPIC_IN', 3), cr: env('AI_PRICE_ANTHROPIC_CACHED', 0.3), cw: env('AI_PRICE_ANTHROPIC_CACHE_WRITE', 3.75), out: env('AI_PRICE_ANTHROPIC_OUT', 15) }
 }
