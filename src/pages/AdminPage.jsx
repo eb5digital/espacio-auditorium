@@ -35,6 +35,23 @@ const WA_STATUS_MAP = {
   closed: { label: 'Cerrado', badge: 'badge-gray' },
 }
 
+/** Calificada y sin atender, o atendida pero el cliente volvió a escribir después. */
+function isWaPending(c) {
+  if (c.status !== 'qualified') return false
+  const h = c.lead_data?.handled_at
+  if (!h) return true
+  const last = c.lead_data?.last_inbound_at
+  return !!last && new Date(last) > new Date(h)
+}
+
+function lastUserMessage(c) {
+  const msgs = Array.isArray(c.messages) ? c.messages : []
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]?.role === 'user' && typeof msgs[i].content === 'string') return msgs[i].content
+  }
+  return ''
+}
+
 const SLOT_LABEL = { full_day: 'Día completo', half_day_morning: 'Mañana', half_day_afternoon: 'Tarde/Noche' }
 const CANCEL_REASON = { admin: 'cancelada por admin', auto: 'auto-cancelada (sin pago)', refunded: 'reembolso', charged_back: 'contracargo', conflict: 'fecha ocupada al pagar', amount_mismatch: 'monto distinto', currency_mismatch: 'moneda distinta', preference_error: 'error al iniciar el pago' }
 const REFRESH_MS = 5 * 60 * 1000
@@ -59,7 +76,7 @@ export default function AdminPage() {
 
   const [waConversations, setWaConversations] = useState([])
   const [waLoading, setWaLoading] = useState(false)
-  const [waFilter, setWaFilter] = useState('all')
+  const [waFilter, setWaFilter] = useState('pending')
   const [waSelected, setWaSelected] = useState(null)
   const [waError, setWaError] = useState('')
 
@@ -115,14 +132,14 @@ export default function AdminPage() {
     setWaLoading(true)
     setWaError('')
     try {
-      const data = await adminPost('/api/admin-wa-conversations', { status: waFilter }, { onUnauthorized })
+      const data = await adminPost('/api/admin-wa-conversations', { status: 'all' }, { onUnauthorized })
       setWaConversations(Array.isArray(data?.conversations) ? data.conversations : [])
     } catch (err) {
       if (err?.status !== 401) setWaError(errMsg(err))
     } finally {
       setWaLoading(false)
     }
-  }, [waFilter, onUnauthorized])
+  }, [onUnauthorized])
 
   useEffect(() => {
     if (!authed) return undefined
@@ -138,8 +155,10 @@ export default function AdminPage() {
   }, [authed, fetchReservations, fetchBlockedDates])
 
   useEffect(() => {
-    if (!authed || tab !== 'whatsapp') return
+    if (!authed || tab !== 'whatsapp') return undefined
     fetchWaConversations()
+    const iv = setInterval(() => { if (document.visibilityState === 'visible') fetchWaConversations() }, 60000)
+    return () => clearInterval(iv)
   }, [authed, tab, fetchWaConversations])
 
   const handleAddBlock = async (e) => {
@@ -235,7 +254,27 @@ export default function AdminPage() {
       .reduce((sum, r) => sum + (Number(r.deposit_amount) || 0), 0),
   }
 
+  const waPending = waConversations.filter(isWaPending)
+  const waVisible = waFilter === 'all' ? waConversations
+    : waFilter === 'pending' ? waPending
+    : waConversations.filter(c => c.status === waFilter)
+
+  const markWaHandled = async (c, handled) => {
+    try {
+      const data = await adminPost('/api/admin-wa-conversations', { action: 'mark-handled', phone: c.phone, handled }, { onUnauthorized })
+      const updated = data?.conversation
+      if (updated) {
+        setWaConversations(list => list.map(x => (x.phone === updated.phone ? updated : x)))
+        setWaSelected(sel => (sel?.phone === updated.phone ? updated : sel))
+      }
+      toast.success(handled ? 'Marcada como atendida' : 'Vuelve a pendientes')
+    } catch (err) {
+      if (err?.status !== 401) toast.error(errMsg(err))
+    }
+  }
+
   const waStats = {
+    pending: waPending.length,
     total: waConversations.length,
     qualified: waConversations.filter(c => c.status === 'qualified').length,
     closed: waConversations.filter(c => c.status === 'closed').length,
@@ -420,8 +459,9 @@ export default function AdminPage() {
         {/* WhatsApp */}
         {tab === 'whatsapp' && (<>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
+            <StatCard label="Por atender" value={waStats.pending} accent warn={waStats.pending > 0} />
             <StatCard label="Conversaciones" value={waStats.total} />
-            <StatCard label="Calificados" value={waStats.qualified} accent />
+            <StatCard label="Calificados" value={waStats.qualified} />
             <StatCard label="Activos" value={waStats.active} />
             <StatCard label="Cerrados" value={waStats.closed} />
             <StatCard label="Mensajes" value={waStats.totalMessages} />
@@ -429,6 +469,7 @@ export default function AdminPage() {
 
           <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
             {[
+              { value: 'pending', label: `Por atender (${waStats.pending})` },
               { value: 'all', label: 'Todos' },
               { value: 'qualified', label: 'Calificados' },
               { value: 'active', label: 'Activos' },
@@ -455,38 +496,55 @@ export default function AdminPage() {
             <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--app-muted)' }} aria-busy="true">
               <span className="spinner" style={{ margin: '0 auto' }} />
             </div>
-          ) : waConversations.length === 0 ? (
+          ) : waVisible.length === 0 ? (
             <div className="card" style={{ textAlign: 'center', padding: '3rem', color: 'var(--app-muted)' }}>
-              No hay conversaciones con este filtro
+              {waFilter === 'pending' ? 'No hay nada pendiente de atender 👌' : 'No hay conversaciones con este filtro'}
             </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #222' }}>
-                    {['Último mensaje', 'Teléfono', 'Nombre', 'Tipo evento', 'Fecha evento', 'Estado', 'Msgs', ''].map((h, i) => (
+                    {['Actualizado', 'Nombre / teléfono', 'Último mensaje del cliente', 'Evento', 'Estado', 'Msgs', ''].map((h, i) => (
                       <th key={i} scope="col" style={thStyle}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {waConversations.map(c => {
+                  {waVisible.map(c => {
                     const s = WA_STATUS_MAP[c.status] || { label: c.status, badge: 'badge-gray' }
                     const lead = c.lead_data || {}
                     const phone = (c.phone || '').replace('whatsapp:', '')
+                    const pending = isWaPending(c)
+                    const evento = [lead.tipo, lead.fecha, lead.personas && `${lead.personas} pers.`].filter(Boolean).join(' · ')
                     return (
-                      <tr key={c.phone} style={{ borderBottom: '1px solid #1a1a1a' }}>
+                      <tr key={c.phone} style={{ borderBottom: '1px solid #1a1a1a', background: pending ? 'rgba(200,144,10,0.06)' : undefined }}>
                         <td style={{ ...tdStyle, color: 'var(--app-muted)', whiteSpace: 'nowrap' }}>
                           {c.updated_at ? format(parseISO(c.updated_at), 'd MMM HH:mm', { locale: es }) : '—'}
                         </td>
-                        <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.82rem', color: 'var(--app-muted)' }}>{phone}</td>
-                        <td style={{ ...tdStyle, fontWeight: 500 }}>{lead.nombre || <span style={{ color: 'var(--app-dim)' }}>—</span>}</td>
-                        <td style={{ ...tdStyle, color: 'var(--app-muted)' }}>{lead.tipo || '—'}</td>
-                        <td style={{ ...tdStyle, color: 'var(--app-muted)', whiteSpace: 'nowrap' }}>{lead.fecha || '—'}</td>
-                        <td style={tdStyle}><span className={`badge ${s.badge}`}>{s.label}</span></td>
-                        <td style={{ ...tdStyle, color: 'var(--app-muted)', textAlign: 'center' }}>{c.messages?.length || 0}</td>
                         <td style={tdStyle}>
+                          <div style={{ fontWeight: 500 }}>{lead.nombre || lead.nombre_perfil || <span style={{ color: 'var(--app-dim)' }}>Sin nombre</span>}</div>
+                          <div style={{ fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--app-dim)' }}>{phone}</div>
+                        </td>
+                        <td style={{ ...tdStyle, color: 'var(--app-muted)', maxWidth: 280 }}>
+                          <span style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{lastUserMessage(c) || '—'}</span>
+                        </td>
+                        <td style={{ ...tdStyle, color: 'var(--app-muted)', whiteSpace: 'nowrap' }}>{evento || '—'}</td>
+                        <td style={tdStyle}>
+                          <span className={`badge ${s.badge}`}>{s.label}</span>
+                          {lead.opt_out && <span className="badge badge-gray" style={{ marginLeft: 4 }}>Baja</span>}
+                          {pending && <span className="badge badge-gold" style={{ marginLeft: 4 }}>Por atender</span>}
+                          {!pending && lead.handled_at && <span className="badge badge-gray" style={{ marginLeft: 4 }}>Atendido</span>}
+                        </td>
+                        <td style={{ ...tdStyle, color: 'var(--app-muted)', textAlign: 'center' }}>{c.messages?.length || 0}</td>
+                        <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
                           <button type="button" className="btn btn-sm btn-ghost-app" onClick={() => setWaSelected(c)} aria-label={`Ver conversación de ${phone}`}>Ver</button>
+                          <a className="btn btn-sm btn-ghost-app" href={`https://wa.me/${phone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" aria-label={`Escribirle a ${phone} por WhatsApp`}>WhatsApp</a>
+                          {c.status === 'qualified' && (
+                            <button type="button" className="btn btn-sm btn-ghost-app" onClick={() => markWaHandled(c, pending)}>
+                              {pending ? '✓ Atendido' : 'Reabrir'}
+                            </button>
+                          )}
                         </td>
                       </tr>
                     )
@@ -502,7 +560,7 @@ export default function AdminPage() {
         <ReservationModal reservation={selected} onClose={() => setSelected(null)} onCancel={handleCancel} />
       )}
       {waSelected && (
-        <WaConversationModal conversation={waSelected} onClose={() => setWaSelected(null)} />
+        <WaConversationModal conversation={waSelected} onClose={() => setWaSelected(null)} onMarkHandled={markWaHandled} />
       )}
     </div>
   )
@@ -647,7 +705,7 @@ function ReservationModal({ reservation: r, onClose, onCancel }) {
 
 const dangerBtn = { background: 'rgba(224,85,85,0.1)', border: '1px solid rgba(224,85,85,0.25)', color: '#ef9a9a' }
 
-function WaConversationModal({ conversation: c, onClose }) {
+function WaConversationModal({ conversation: c, onClose, onMarkHandled }) {
   const s = WA_STATUS_MAP[c.status] || { label: c.status, badge: 'badge-gray' }
   const lead = c.lead_data || {}
   const messages = Array.isArray(c.messages) ? c.messages : []
@@ -680,6 +738,16 @@ function WaConversationModal({ conversation: c, onClose }) {
           <span>Estado: <span className={`badge ${s.badge}`} style={{ fontSize: '0.75rem' }}>{s.label}</span></span>
           <span>· {messages.length} mensajes</span>
           {c.updated_at && <span>· Último: {format(parseISO(c.updated_at), 'd MMM yyyy HH:mm', { locale: es })}</span>}
+          {lead.handled_at && <span>· Atendido: {format(parseISO(lead.handled_at), 'd MMM HH:mm', { locale: es })}</span>}
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <a className="btn btn-sm btn-gold" href={`https://wa.me/${phone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer">Escribirle por WhatsApp</a>
+          {c.status === 'qualified' && (
+            <button type="button" className="btn btn-sm btn-outline-app" onClick={() => onMarkHandled(c, isWaPending(c))}>
+              {isWaPending(c) ? '✓ Marcar como atendido' : 'Volver a pendientes'}
+            </button>
+          )}
         </div>
 
         <div>
