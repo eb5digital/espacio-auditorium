@@ -140,8 +140,22 @@ function extractText(m) {
   return null   // audio, imagen, documento, sticker, ubicación…
 }
 
+// Lista de bloqueo: números que se descartan ANTES de leer, marcar como leído, responder o llamar al modelo.
+// Se compara por los últimos 10 dígitos (cubre 549… y 54… sin el 9). Se puede ampliar sin tocar código
+// con la variable WA_BLOCKED_NUMBERS (números separados por coma).
+const BLOCKED_DEFAULT = ['5491131567272', '5491149399253', '5491133133185']
+const last10 = n => String(n).replace(/\D/g, '').slice(-10)
+const BLOCKED_TAILS = new Set(
+  [...BLOCKED_DEFAULT, ...String(process.env.WA_BLOCKED_NUMBERS || '').split(',')]
+    .map(last10).filter(t => t.length === 10),
+)
+
 async function processMessage(m, contact) {
   const fromDigits = String(m.from || '').replace(/\D/g, '')
+  if (BLOCKED_TAILS.has(last10(fromDigits))) {
+    console.warn(`[wa-meta] número bloqueado ...${last10(fromDigits).slice(-4)}: se descarta sin responder ni gastar IA`)
+    return
+  }
   const phone = `whatsapp:+${fromDigits}`            // mismo formato que la tabla y el panel /admin
   if (!WA_ADDRESS_RE.test(phone)) return
   const who = maskPhone(phone)
