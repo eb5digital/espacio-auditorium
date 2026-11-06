@@ -41,8 +41,8 @@ export const LEAD_FIELD_MAX = 120
 export const LEAD_KEYS = ['fecha', 'personas', 'tipo', 'nombre', 'empresa', 'email', 'duracion', 'urgencia', 'notas']
 
 export const RATE_LIMITS = [
-  { bucket: 'wa:phone', max: 20, windowSeconds: 600 },
-  { bucket: 'wa:phone:day', max: 150, windowSeconds: 86400 },
+  { bucket: 'wa:phone', max: 12, windowSeconds: 600 },
+  { bucket: 'wa:phone:day', max: 40, windowSeconds: 86400 },
 ]
 
 // ---------------------------------------------------------------------------
@@ -214,6 +214,14 @@ Te van a atender en vivo 👍`
 
 export const MEDIA_RESPONSE = 'Solo recibimos mensajes de texto por este canal. Escribinos tu consulta y te respondemos enseguida 😊'
 export const TOO_LONG_RESPONSE = `Tu mensaje es muy largo para que lo pueda leer bien. ¿Me lo resumís en menos de ${MAX_BODY_CHARS} caracteres? 🙏`
+// Insultos claros: se resuelven sin IA (costo cero). Sólo términos inequívocos para no frenar leads reales.
+const L = '(?<![a-záéíóúñ])', R = '(?![a-záéíóúñ])'
+export const ABUSE_RE = new RegExp(
+  `${L}(?:boludo|boluda|pelotudo|pelotuda|forro|forra|hdp|hijo\\s+de\\s+(?:re\\s+)?put[ao]|la\\s+(?:re\\s+)?concha|concha\\s+de|chup[aá]me|mierda|idiota|est[uú]pido|est[uú]pida|imb[eé]cil|trolo|trola|pij[ao]|verga|put[ao]|cag[oó]n|mogol[ií]co|andate\\s+a)${R}`,
+  'i',
+)
+export const ABUSE_STRIKES_MAX = 2   // al 2º mensaje abusivo el número queda en silencio permanente
+
 export const RATE_LIMIT_RESPONSE = `Recibimos muchos mensajes seguidos desde este número. Escribinos de nuevo en un rato, o contactá directo al equipo: ${TEAM_WA_LINK} 🙏`
 export const FALLBACK_RESPONSE = `Hola! En este momento no puedo responderte automáticamente. Escribinos directo al equipo: ${TEAM_WA_LINK} 🙏`
 
