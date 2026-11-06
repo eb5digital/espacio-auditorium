@@ -25,7 +25,7 @@ import { dayStatus } from './_availability.js'
 import { todayLocal } from './_dates.js'
 import { sendMail, BUSINESS_EMAIL } from './_email.js'
 import {
-  WA_ADDRESS_RE, TEAM_TO, MAX_BODY_CHARS, LEAD_KEYS, LEAD_FIELD_MAX, RATE_LIMITS,
+  WA_ADDRESS_RE, TEAM_TO, MAX_BODY_CHARS, LEAD_KEYS, LEAD_FIELD_MAX, RATE_LIMITS, ABUSE_RE, ABUSE_STRIKES_MAX,
   HUMAN_RESPONSE, MEDIA_RESPONSE, TOO_LONG_RESPONSE, RATE_LIMIT_RESPONSE, FALLBACK_RESPONSE,
   isHumanRequest, maskPhone, stripControl, cleanLeadValue, parseSignal, formatTeamMsg,
   logFirstContact, appendLeadToSheet, extractDate, availabilityNote,
@@ -181,9 +181,26 @@ async function processMessage(m, contact) {
       Promise.all(RATE_LIMITS.map(l => checkRateLimit({ ...l, key: phoneKey }))),
       getConversation(phone),
     ])
+    // Número ya marcado como abusivo: silencio total, sin IA ni respuesta
+    if (conv.lead_data?.abuse_blocked) {
+      console.warn(`[wa-meta] ${who}: marcado como abusivo, se ignora`)
+      return
+    }
     if (limits.find(l => !l.allowed)) {
       console.warn(`[wa-meta] ${who}: rate limit alcanzado`)
+      // Avisar una sola vez: si el último mensaje nuestro ya fue el aviso, no repetir
+      const lastBot = [...conv.messages].reverse().find(x => x.role === 'assistant')
+      if (lastBot?.content === RATE_LIMIT_RESPONSE) return
+      await saveConversation(phone, [...conv.messages, { role: 'user', content: userText }, { role: 'assistant', content: RATE_LIMIT_RESPONSE }], {}, messageSid)
       return reply(RATE_LIMIT_RESPONSE)
+    }
+    // Insultos: se resuelven sin IA. Cada número tiene ABUSE_STRIKES_MAX oportunidades y después queda en silencio.
+    if (ABUSE_RE.test(userText)) {
+      const strikes = (conv.lead_data?.abuse_strikes || 0) + 1
+      const abusive = strikes >= ABUSE_STRIKES_MAX
+      console.warn(`[wa-meta] ${who}: mensaje abusivo (strike ${strikes})${abusive ? ' → bloqueado' : ''}`)
+      await saveConversation(phone, conv.messages, { lead_data: { ...(conv.lead_data || {}), abuse_strikes: strikes, abuse_blocked: abusive } }, messageSid)
+      return
     }
     if (messageSid && conv.last_message_sid === messageSid) {
       console.log(`[wa-meta] ${who}: mensaje repetido (reintento de Meta), se ignora`)
